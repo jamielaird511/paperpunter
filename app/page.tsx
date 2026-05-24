@@ -8,13 +8,13 @@ export default function Home() {
           </span>
           <nav className="flex items-center gap-3 sm:gap-4">
             <a
-              href="#"
+              href="/login"
               className="text-sm font-medium text-slate-600 hover:text-blue-700"
             >
               Log In
             </a>
             <a
-              href="#"
+              href="/signup"
               className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 sm:px-4"
             >
               Create Competition
@@ -44,13 +44,13 @@ export default function Home() {
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:gap-4">
               <a
-                href="#"
+                href="/signup"
                 className="rounded-lg bg-blue-600 px-6 py-3 text-center text-base font-semibold text-white hover:bg-blue-700"
               >
                 Create Competition
               </a>
               <a
-                href="#"
+                href="/login"
                 className="rounded-lg border border-blue-200 bg-white px-6 py-3 text-center text-base font-semibold text-blue-700 hover:bg-blue-50"
               >
                 Join a Comp
@@ -172,7 +172,7 @@ export default function Home() {
               they&apos;ll tip.
             </p>
             <a
-              href="#"
+              href="/signup"
               className="mt-6 inline-block rounded-lg bg-white px-6 py-3 text-base font-semibold text-blue-700 hover:bg-blue-50"
             >
               Create Competition
