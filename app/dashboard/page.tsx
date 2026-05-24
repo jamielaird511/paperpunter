@@ -227,10 +227,11 @@ export default function DashboardPage() {
           {!error && competitions.length > 0 ? (
             <ul className="mt-4 space-y-4">
               {competitions.map((competition) => (
-                <li
-                  key={competition.id}
-                  className="rounded-xl border border-blue-100 bg-white p-5"
-                >
+                <li key={competition.id}>
+                  <Link
+                    href={`/dashboard/competitions/${competition.id}`}
+                    className="block rounded-xl border border-blue-100 bg-white p-5 hover:border-blue-200"
+                  >
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <h3 className="text-lg font-semibold text-slate-900">
@@ -275,6 +276,7 @@ export default function DashboardPage() {
                       </dd>
                     </div>
                   </dl>
+                  </Link>
                 </li>
               ))}
             </ul>
