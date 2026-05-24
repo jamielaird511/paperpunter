@@ -9,8 +9,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 type UserCompetition = {
   id: string;
   name: string;
-  sport_code: string;
-  season: string | null;
+  fixtureSetName: string | null;
   status: string;
   visibility: string;
   invite_code: string;
@@ -18,11 +17,43 @@ type UserCompetition = {
   role: string;
 };
 
-type CompetitionDetails = Omit<UserCompetition, "role">;
+type CompetitionDetails = {
+  id: string;
+  name: string;
+  status: string;
+  visibility: string;
+  invite_code: string;
+  member_limit: number;
+  seasons: { name: string } | { name: string }[] | null;
+};
+
+function normalizeSeasonName(
+  seasons: CompetitionDetails["seasons"],
+): string | null {
+  if (!seasons) {
+    return null;
+  }
+
+  if (Array.isArray(seasons)) {
+    return seasons[0]?.name ?? null;
+  }
+
+  return seasons.name;
+}
 
 function normalizeCompetition(
-  competitions: CompetitionDetails | CompetitionDetails[] | null | undefined,
-): CompetitionDetails | null {
+  competitions:
+    | Omit<CompetitionDetails, "seasons"> & {
+        seasons?: CompetitionDetails["seasons"];
+      }
+    | (Omit<CompetitionDetails, "seasons"> & {
+        seasons?: CompetitionDetails["seasons"];
+      })[]
+    | null
+    | undefined,
+): (Omit<CompetitionDetails, "seasons"> & {
+  seasons?: CompetitionDetails["seasons"];
+}) | null {
   if (!competitions) {
     return null;
   }
@@ -32,13 +63,6 @@ function normalizeCompetition(
   }
 
   return competitions;
-}
-
-function formatSportCode(code: string): string {
-  return code
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
 }
 
 export default function DashboardPage() {
@@ -77,12 +101,13 @@ export default function DashboardPage() {
           competitions (
             id,
             name,
-            sport_code,
-            season,
             status,
             visibility,
             invite_code,
-            member_limit
+            member_limit,
+            seasons (
+              name
+            )
           )
         `,
         )
@@ -107,7 +132,13 @@ export default function DashboardPage() {
             }
 
             return {
-              ...competition,
+              id: competition.id,
+              name: competition.name,
+              fixtureSetName: normalizeSeasonName(competition.seasons ?? null),
+              status: competition.status,
+              visibility: competition.visibility,
+              invite_code: competition.invite_code,
+              member_limit: competition.member_limit,
               role: row.role,
             };
           })
@@ -238,10 +269,7 @@ export default function DashboardPage() {
                         {competition.name}
                       </h3>
                       <p className="mt-1 text-sm text-slate-600">
-                        {formatSportCode(competition.sport_code)}
-                        {competition.season
-                          ? ` · ${competition.season}`
-                          : null}
+                        {competition.fixtureSetName ?? "No fixture set linked"}
                       </p>
                     </div>
                     {competition.role === "owner" ? (

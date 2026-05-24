@@ -5,17 +5,6 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabase";
 
-const SPORTS = [
-  { label: "Rugby Union", value: "rugby_union" },
-  { label: "Rugby League", value: "rugby_league" },
-  { label: "Australian Rules", value: "australian_rules" },
-  { label: "Football", value: "football" },
-  { label: "Basketball", value: "basketball" },
-  { label: "American Football", value: "american_football" },
-  { label: "Cricket", value: "cricket" },
-  { label: "Other", value: "other" },
-] as const;
-
 const VISIBILITY_OPTIONS = [
   { label: "Private", value: "private" },
   { label: "Unlisted", value: "unlisted" },
@@ -25,6 +14,12 @@ const VISIBILITY_OPTIONS = [
 const inputClassName =
   "mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200";
 
+type FixtureSetOption = {
+  id: string;
+  label: string;
+  sportSlug: string;
+};
+
 function slugify(name: string): string {
   const base = name
     .toLowerCase()
@@ -33,6 +28,10 @@ function slugify(name: string): string {
     .replace(/^-+|-+$/g, "");
   const suffix = Math.random().toString(36).slice(2, 8);
   return `${base || "comp"}-${suffix}`;
+}
+
+function sportSlugToCode(slug: string): string {
+  return slug.replace(/-/g, "_") || "other";
 }
 
 function generateInviteCode(): string {
@@ -45,10 +44,9 @@ function generateInviteCode(): string {
 export default function CreateCompetitionPage() {
   const router = useRouter();
   const [authChecked, setAuthChecked] = useState(false);
-  const [userId, setUserId] = useState<string | null>(null);
+  const [fixtureSets, setFixtureSets] = useState<FixtureSetOption[]>([]);
   const [name, setName] = useState("");
-  const [sportCode, setSportCode] = useState<string>(SPORTS[0].value);
-  const [season, setSeason] = useState("");
+  const [seasonId, setSeasonId] = useState("");
   const [visibility, setVisibility] = useState<string>("private");
   const [memberLimit, setMemberLimit] = useState(10);
   const [error, setError] = useState<string | null>(null);
@@ -57,14 +55,62 @@ export default function CreateCompetitionPage() {
   useEffect(() => {
     const supabase = getSupabaseClient();
 
-    supabase.auth.getUser().then(({ data: { user }, error: authError }) => {
+    async function loadPage() {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
       if (authError || !user) {
         router.replace("/login");
         return;
       }
-      setUserId(user.id);
+
+      const { data: seasonsData, error: seasonsError } = await supabase
+        .from("seasons")
+        .select(
+          `
+          id,
+          name,
+          leagues (
+            sports (
+              slug
+            )
+          )
+        `,
+        )
+        .order("name", { ascending: true });
+
+      if (seasonsError) {
+        setError(seasonsError.message);
+        setAuthChecked(true);
+        return;
+      }
+
+      const options = (seasonsData ?? []).map((season) => {
+        const league = season.leagues as
+          | { sports: { slug: string } | { slug: string }[] | null }
+          | { sports: { slug: string } | { slug: string }[] | null }[]
+          | null;
+        const leagueRecord = Array.isArray(league) ? league[0] : league;
+        const sport = leagueRecord?.sports;
+        const sportRecord = Array.isArray(sport) ? sport[0] : sport;
+
+        return {
+          id: season.id,
+          label: season.name,
+          sportSlug: sportRecord?.slug ?? "other",
+        };
+      });
+
+      setFixtureSets(options);
+      if (options.length > 0) {
+        setSeasonId(options[0].id);
+      }
       setAuthChecked(true);
-    });
+    }
+
+    loadPage();
   }, [router]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -77,8 +123,21 @@ export default function CreateCompetitionPage() {
       return;
     }
 
+    if (!seasonId) {
+      setError("Please select a fixture set.");
+      return;
+    }
+
     if (memberLimit < 1) {
       setError("Member limit must be at least 1.");
+      return;
+    }
+
+    const selectedFixtureSet = fixtureSets.find(
+      (fixtureSet) => fixtureSet.id === seasonId,
+    );
+    if (!selectedFixtureSet) {
+      setError("Please select a valid fixture set.");
       return;
     }
 
@@ -99,8 +158,9 @@ export default function CreateCompetitionPage() {
     const competitionPayload = {
       name: trimmedName,
       slug: slugify(trimmedName),
-      sport_code: sportCode,
-      season: season.trim() || null,
+      season_id: seasonId,
+      sport_code: sportSlugToCode(selectedFixtureSet.sportSlug),
+      season: selectedFixtureSet.label,
       created_by: user.id,
       invite_code: generateInviteCode(),
       visibility,
@@ -108,16 +168,11 @@ export default function CreateCompetitionPage() {
       member_limit: memberLimit,
     };
 
-    console.log("[create-competition] user.id:", user.id);
-    console.log("[create-competition] payload:", competitionPayload);
-
     const { data: competition, error: competitionError } = await supabase
       .from("competitions")
       .insert(competitionPayload)
       .select("id")
       .single();
-
-    console.log("[create-competition] insert error:", competitionError);
 
     if (competitionError || !competition) {
       setLoading(false);
@@ -174,7 +229,8 @@ export default function CreateCompetitionPage() {
           Create a competition
         </h1>
         <p className="mt-2 text-slate-600">
-          Set up your comp in a minute. Fixtures and invites come next.
+          Pick a fixture set and name your comp. Rounds and fixtures come
+          automatically.
         </p>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-4">
@@ -193,48 +249,38 @@ export default function CreateCompetitionPage() {
               value={name}
               onChange={(event) => setName(event.target.value)}
               className={inputClassName}
-              placeholder="Henderson Bros Site Office"
+              placeholder="Dave's Office NPC Comp"
             />
           </div>
 
           <div>
             <label
-              htmlFor="sport"
+              htmlFor="fixtureSet"
               className="block text-sm font-medium text-slate-700"
             >
-              Sport
+              Fixture set
             </label>
-            <select
-              id="sport"
-              name="sport"
-              value={sportCode}
-              onChange={(event) => setSportCode(event.target.value)}
-              className={inputClassName}
-            >
-              {SPORTS.map((sport) => (
-                <option key={sport.value} value={sport.value}>
-                  {sport.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label
-              htmlFor="season"
-              className="block text-sm font-medium text-slate-700"
-            >
-              Season
-            </label>
-            <input
-              id="season"
-              name="season"
-              type="text"
-              value={season}
-              onChange={(event) => setSeason(event.target.value)}
-              className={inputClassName}
-              placeholder="2026"
-            />
+            {fixtureSets.length === 0 ? (
+              <p className="mt-2 rounded-lg border border-dashed border-blue-200 bg-white px-3 py-2 text-sm text-slate-600">
+                No fixture sets available yet. Ask an admin to load seasons
+                first.
+              </p>
+            ) : (
+              <select
+                id="fixtureSet"
+                name="fixtureSet"
+                required
+                value={seasonId}
+                onChange={(event) => setSeasonId(event.target.value)}
+                className={inputClassName}
+              >
+                {fixtureSets.map((fixtureSet) => (
+                  <option key={fixtureSet.id} value={fixtureSet.id}>
+                    {fixtureSet.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div>
@@ -286,7 +332,7 @@ export default function CreateCompetitionPage() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || fixtureSets.length === 0}
             className="w-full rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
           >
             {loading ? "Creating…" : "Create competition"}

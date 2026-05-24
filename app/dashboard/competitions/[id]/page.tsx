@@ -8,9 +8,8 @@ import { getSupabaseClient } from "@/lib/supabase";
 type Competition = {
   id: string;
   name: string;
-  sport_code: string;
-  season: string | null;
   season_id: string | null;
+  fixtureSetName: string | null;
   status: string;
   visibility: string;
   invite_code: string;
@@ -43,11 +42,18 @@ type SourceFixture = {
   starts_at: string | null;
 };
 
-function formatSportCode(code: string): string {
-  return code
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+function normalizeSeasonName(
+  seasons: { name: string } | { name: string }[] | null | undefined,
+): string | null {
+  if (!seasons) {
+    return null;
+  }
+
+  if (Array.isArray(seasons)) {
+    return seasons[0]?.name ?? null;
+  }
+
+  return seasons.name;
 }
 
 function formatDateTime(iso: string | null): string {
@@ -166,7 +172,18 @@ export default function CompetitionDetailPage() {
       const { data: competitionData, error: competitionError } = await supabase
         .from("competitions")
         .select(
-          "id, name, sport_code, season, season_id, status, visibility, invite_code, member_limit",
+          `
+          id,
+          name,
+          season_id,
+          status,
+          visibility,
+          invite_code,
+          member_limit,
+          seasons (
+            name
+          )
+        `,
         )
         .eq("id", competitionId)
         .single();
@@ -176,6 +193,22 @@ export default function CompetitionDetailPage() {
         setLoading(false);
         return;
       }
+
+      const competitionRecord: Competition = {
+        id: competitionData.id,
+        name: competitionData.name,
+        season_id: competitionData.season_id,
+        fixtureSetName: normalizeSeasonName(
+          competitionData.seasons as
+            | { name: string }
+            | { name: string }[]
+            | null,
+        ),
+        status: competitionData.status,
+        visibility: competitionData.visibility,
+        invite_code: competitionData.invite_code,
+        member_limit: competitionData.member_limit,
+      };
 
       const { data: membersData, error: membersError } = await supabase
         .from("competition_members")
@@ -212,11 +245,11 @@ export default function CompetitionDetailPage() {
         })
         .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-      setCompetition(competitionData);
+      setCompetition(competitionRecord);
       setMembers(memberList);
 
-      if (competitionData.season_id) {
-        await loadFixtureSet(competitionData.season_id);
+      if (competitionRecord.season_id) {
+        await loadFixtureSet(competitionRecord.season_id);
       } else {
         setSourceRounds([]);
         setSourceFixtures([]);
@@ -292,13 +325,18 @@ export default function CompetitionDetailPage() {
           {competition.name}
         </h1>
         <p className="mt-2 text-slate-600">
-          {formatSportCode(competition.sport_code)}
-          {competition.season ? ` · ${competition.season}` : null}
+          {competition.fixtureSetName ?? "No fixture set linked"}
         </p>
 
         <section className="mt-8 rounded-xl border border-blue-100 bg-white p-5">
           <h2 className="text-lg font-semibold text-slate-900">Details</h2>
           <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt className="text-slate-500">Fixture set</dt>
+              <dd className="font-medium text-slate-900">
+                {competition.fixtureSetName ?? "—"}
+              </dd>
+            </div>
             <div>
               <dt className="text-slate-500">Status</dt>
               <dd className="font-medium capitalize text-slate-900">
