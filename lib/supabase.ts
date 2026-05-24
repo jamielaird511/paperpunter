@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 function getSupabaseConfig() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -16,4 +16,19 @@ function getSupabaseConfig() {
 export function createSupabaseClient() {
   const { url, anonKey } = getSupabaseConfig();
   return createClient(url, anonKey);
+}
+
+let browserClient: SupabaseClient | null = null;
+
+/** Singleton browser client — keeps auth session across refreshes. */
+export function getSupabaseClient() {
+  if (typeof window === "undefined") {
+    throw new Error("getSupabaseClient() must be used in client components");
+  }
+
+  if (!browserClient) {
+    browserClient = createSupabaseClient();
+  }
+
+  return browserClient;
 }
