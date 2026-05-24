@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { getSupabaseClient } from "@/lib/supabase";
 
@@ -32,6 +32,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const isLoggingOutRef = useRef(false);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
@@ -93,7 +94,7 @@ export default function DashboardPage() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session) {
+      if (!session && !isLoggingOutRef.current) {
         router.replace("/login");
       }
     });
@@ -103,10 +104,28 @@ export default function DashboardPage() {
 
   async function handleLogout() {
     setLoggingOut(true);
-    const supabase = getSupabaseClient();
-    await supabase.auth.signOut();
-    router.replace("/");
-    router.refresh();
+    isLoggingOutRef.current = true;
+    let signedOut = false;
+
+    try {
+      const supabase = getSupabaseClient();
+      const { error: signOutError } = await supabase.auth.signOut();
+
+      if (signOutError) {
+        console.error("[dashboard] signOut error:", signOutError);
+        return;
+      }
+
+      signedOut = true;
+      router.replace("/");
+    } catch (err) {
+      console.error("[dashboard] signOut error:", err);
+    } finally {
+      setLoggingOut(false);
+      if (!signedOut) {
+        isLoggingOutRef.current = false;
+      }
+    }
   }
 
   if (loading) {
