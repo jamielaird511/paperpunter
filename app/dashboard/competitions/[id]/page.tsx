@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabase";
 
 type Competition = {
@@ -10,6 +10,7 @@ type Competition = {
   name: string;
   sport_code: string;
   season: string | null;
+  season_id: string | null;
   status: string;
   visibility: string;
   invite_code: string;
@@ -27,31 +28,20 @@ type CompetitionMember = {
   displayName: string;
 };
 
-type Round = {
+type SourceRound = {
   id: string;
   name: string;
   round_number: number | null;
   lock_time: string | null;
 };
 
-type Fixture = {
+type SourceFixture = {
   id: string;
-  round_id: string;
+  source_round_id: string;
   home_team: string;
   away_team: string;
   starts_at: string | null;
 };
-
-type FixtureForm = {
-  home: string;
-  away: string;
-  kickoff: string;
-};
-
-const inputClassName =
-  "mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200";
-
-const emptyFixtureForm: FixtureForm = { home: "", away: "", kickoff: "" };
 
 function formatSportCode(code: string): string {
   return code
@@ -95,58 +85,52 @@ export default function CompetitionDetailPage() {
 
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [members, setMembers] = useState<CompetitionMember[]>([]);
-  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
-  const [rounds, setRounds] = useState<Round[]>([]);
-  const [fixtures, setFixtures] = useState<Fixture[]>([]);
+  const [sourceRounds, setSourceRounds] = useState<SourceRound[]>([]);
+  const [sourceFixtures, setSourceFixtures] = useState<SourceFixture[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [roundsError, setRoundsError] = useState<string | null>(null);
+  const [fixtureSetError, setFixtureSetError] = useState<string | null>(null);
 
-  const [roundName, setRoundName] = useState("");
-  const [roundLockTime, setRoundLockTime] = useState("");
-  const [roundSubmitting, setRoundSubmitting] = useState(false);
-
-  const [fixtureForms, setFixtureForms] = useState<Record<string, FixtureForm>>(
-    {},
-  );
-  const [fixtureSubmitting, setFixtureSubmitting] = useState<string | null>(
-    null,
-  );
-
-  const canManage =
-    currentUserRole === "owner" || currentUserRole === "admin";
-
-  const loadRoundsAndFixtures = useCallback(async () => {
+  const loadFixtureSet = useCallback(async (seasonId: string) => {
     const supabase = getSupabaseClient();
 
     const { data: roundsData, error: roundsFetchError } = await supabase
-      .from("rounds")
+      .from("source_rounds")
       .select("id, name, round_number, lock_time")
-      .eq("competition_id", competitionId)
+      .eq("season_id", seasonId)
       .order("round_number", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
     if (roundsFetchError) {
-      setRoundsError(roundsFetchError.message);
+      setFixtureSetError(roundsFetchError.message);
+      return;
+    }
+
+    const roundIds = (roundsData ?? []).map((round) => round.id);
+
+    if (roundIds.length === 0) {
+      setFixtureSetError(null);
+      setSourceRounds([]);
+      setSourceFixtures([]);
       return;
     }
 
     const { data: fixturesData, error: fixturesFetchError } = await supabase
-      .from("fixtures")
-      .select("id, round_id, home_team, away_team, starts_at")
-      .eq("competition_id", competitionId)
+      .from("source_fixtures")
+      .select("id, source_round_id, home_team, away_team, starts_at")
+      .in("source_round_id", roundIds)
       .order("starts_at", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
     if (fixturesFetchError) {
-      setRoundsError(fixturesFetchError.message);
+      setFixtureSetError(fixturesFetchError.message);
       return;
     }
 
-    setRoundsError(null);
-    setRounds(roundsData ?? []);
-    setFixtures(fixturesData ?? []);
-  }, [competitionId]);
+    setFixtureSetError(null);
+    setSourceRounds(roundsData ?? []);
+    setSourceFixtures(fixturesData ?? []);
+  }, []);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
@@ -154,6 +138,7 @@ export default function CompetitionDetailPage() {
     async function loadCompetition() {
       setLoading(true);
       setError(null);
+      setFixtureSetError(null);
 
       const {
         data: { user },
@@ -167,7 +152,7 @@ export default function CompetitionDetailPage() {
 
       const { data: membership, error: membershipError } = await supabase
         .from("competition_members")
-        .select("id, role")
+        .select("id")
         .eq("competition_id", competitionId)
         .eq("user_id", user.id)
         .eq("status", "active")
@@ -178,12 +163,10 @@ export default function CompetitionDetailPage() {
         return;
       }
 
-      setCurrentUserRole(membership.role);
-
       const { data: competitionData, error: competitionError } = await supabase
         .from("competitions")
         .select(
-          "id, name, sport_code, season, status, visibility, invite_code, member_limit",
+          "id, name, sport_code, season, season_id, status, visibility, invite_code, member_limit",
         )
         .eq("id", competitionId)
         .single();
@@ -231,7 +214,14 @@ export default function CompetitionDetailPage() {
 
       setCompetition(competitionData);
       setMembers(memberList);
-      await loadRoundsAndFixtures();
+
+      if (competitionData.season_id) {
+        await loadFixtureSet(competitionData.season_id);
+      } else {
+        setSourceRounds([]);
+        setSourceFixtures([]);
+      }
+
       setLoading(false);
     }
 
@@ -246,104 +236,7 @@ export default function CompetitionDetailPage() {
     });
 
     return () => subscription.unsubscribe();
-  }, [router, competitionId, loadRoundsAndFixtures]);
-
-  function updateFixtureForm(
-    roundId: string,
-    field: keyof FixtureForm,
-    value: string,
-  ) {
-    setFixtureForms((prev) => ({
-      ...prev,
-      [roundId]: {
-        ...emptyFixtureForm,
-        ...prev[roundId],
-        [field]: value,
-      },
-    }));
-  }
-
-  async function handleCreateRound(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canManage) {
-      return;
-    }
-
-    const trimmedName = roundName.trim();
-    if (!trimmedName) {
-      return;
-    }
-
-    setRoundSubmitting(true);
-    setRoundsError(null);
-
-    const supabase = getSupabaseClient();
-    const nextRoundNumber =
-      rounds.reduce((max, round) => Math.max(max, round.round_number ?? 0), 0) +
-      1;
-
-    const { error: insertError } = await supabase.from("rounds").insert({
-      competition_id: competitionId,
-      name: trimmedName,
-      round_number: nextRoundNumber,
-      lock_time: roundLockTime ? new Date(roundLockTime).toISOString() : null,
-    });
-
-    setRoundSubmitting(false);
-
-    if (insertError) {
-      setRoundsError(insertError.message);
-      return;
-    }
-
-    setRoundName("");
-    setRoundLockTime("");
-    await loadRoundsAndFixtures();
-  }
-
-  async function handleCreateFixture(
-    event: FormEvent<HTMLFormElement>,
-    roundId: string,
-  ) {
-    event.preventDefault();
-    if (!canManage) {
-      return;
-    }
-
-    const form = fixtureForms[roundId] ?? emptyFixtureForm;
-    const homeTeam = form.home.trim();
-    const awayTeam = form.away.trim();
-
-    if (!homeTeam || !awayTeam || !form.kickoff) {
-      setRoundsError("Home team, away team, and kickoff are required.");
-      return;
-    }
-
-    setFixtureSubmitting(roundId);
-    setRoundsError(null);
-
-    const supabase = getSupabaseClient();
-    const { error: insertError } = await supabase.from("fixtures").insert({
-      competition_id: competitionId,
-      round_id: roundId,
-      home_team: homeTeam,
-      away_team: awayTeam,
-      starts_at: new Date(form.kickoff).toISOString(),
-    });
-
-    setFixtureSubmitting(null);
-
-    if (insertError) {
-      setRoundsError(insertError.message);
-      return;
-    }
-
-    setFixtureForms((prev) => ({
-      ...prev,
-      [roundId]: emptyFixtureForm,
-    }));
-    await loadRoundsAndFixtures();
-  }
+  }, [router, competitionId, loadFixtureSet]);
 
   if (loading) {
     return (
@@ -461,77 +354,32 @@ export default function CompetitionDetailPage() {
         </section>
 
         <section className="mt-8">
-          <h2 className="text-lg font-semibold text-slate-900">
-            Rounds & Fixtures
-          </h2>
+          <h2 className="text-lg font-semibold text-slate-900">Fixture set</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Rounds and fixtures are managed by PaperPunter, not by competition
+            owners.
+          </p>
 
-          {roundsError ? (
+          {fixtureSetError ? (
             <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-              {roundsError}
+              {fixtureSetError}
             </p>
           ) : null}
 
-          {canManage ? (
-            <form
-              onSubmit={handleCreateRound}
-              className="mt-4 rounded-xl border border-blue-100 bg-white p-5"
-            >
-              <h3 className="text-sm font-semibold text-slate-900">Add round</h3>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label
-                    htmlFor="roundName"
-                    className="block text-sm font-medium text-slate-700"
-                  >
-                    Round name
-                  </label>
-                  <input
-                    id="roundName"
-                    type="text"
-                    required
-                    value={roundName}
-                    onChange={(event) => setRoundName(event.target.value)}
-                    className={inputClassName}
-                    placeholder="Round 1"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="roundLockTime"
-                    className="block text-sm font-medium text-slate-700"
-                  >
-                    Lockout (optional)
-                  </label>
-                  <input
-                    id="roundLockTime"
-                    type="datetime-local"
-                    value={roundLockTime}
-                    onChange={(event) => setRoundLockTime(event.target.value)}
-                    className={inputClassName}
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                disabled={roundSubmitting}
-                className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-              >
-                {roundSubmitting ? "Adding…" : "Add round"}
-              </button>
-            </form>
-          ) : null}
-
-          {rounds.length === 0 ? (
+          {!competition.season_id ? (
             <p className="mt-4 rounded-xl border border-dashed border-blue-200 bg-white px-5 py-6 text-sm text-slate-600">
-              No rounds yet
+              This competition is not linked to a fixture set yet.
+            </p>
+          ) : sourceRounds.length === 0 ? (
+            <p className="mt-4 rounded-xl border border-dashed border-blue-200 bg-white px-5 py-6 text-sm text-slate-600">
+              No rounds in this fixture set yet.
             </p>
           ) : (
             <div className="mt-4 space-y-4">
-              {rounds.map((round) => {
-                const roundFixtures = fixtures.filter(
-                  (fixture) => fixture.round_id === round.id,
+              {sourceRounds.map((round) => {
+                const roundFixtures = sourceFixtures.filter(
+                  (fixture) => fixture.source_round_id === round.id,
                 );
-                const form = fixtureForms[round.id] ?? emptyFixtureForm;
 
                 return (
                   <div
@@ -551,7 +399,7 @@ export default function CompetitionDetailPage() {
 
                     {roundFixtures.length === 0 ? (
                       <p className="mt-3 text-sm text-slate-600">
-                        No fixtures yet
+                        No fixtures in this round yet.
                       </p>
                     ) : (
                       <ul className="mt-3 space-y-2">
@@ -570,98 +418,6 @@ export default function CompetitionDetailPage() {
                         ))}
                       </ul>
                     )}
-
-                    {canManage ? (
-                      <form
-                        onSubmit={(event) =>
-                          handleCreateFixture(event, round.id)
-                        }
-                        className="mt-4 border-t border-blue-50 pt-4"
-                      >
-                        <h4 className="text-sm font-semibold text-slate-900">
-                          Add fixture
-                        </h4>
-                        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                          <div>
-                            <label
-                              htmlFor={`home-${round.id}`}
-                              className="block text-sm font-medium text-slate-700"
-                            >
-                              Home team
-                            </label>
-                            <input
-                              id={`home-${round.id}`}
-                              type="text"
-                              required
-                              value={form.home}
-                              onChange={(event) =>
-                                updateFixtureForm(
-                                  round.id,
-                                  "home",
-                                  event.target.value,
-                                )
-                              }
-                              className={inputClassName}
-                              placeholder="Blues"
-                            />
-                          </div>
-                          <div>
-                            <label
-                              htmlFor={`away-${round.id}`}
-                              className="block text-sm font-medium text-slate-700"
-                            >
-                              Away team
-                            </label>
-                            <input
-                              id={`away-${round.id}`}
-                              type="text"
-                              required
-                              value={form.away}
-                              onChange={(event) =>
-                                updateFixtureForm(
-                                  round.id,
-                                  "away",
-                                  event.target.value,
-                                )
-                              }
-                              className={inputClassName}
-                              placeholder="Crusaders"
-                            />
-                          </div>
-                          <div>
-                            <label
-                              htmlFor={`kickoff-${round.id}`}
-                              className="block text-sm font-medium text-slate-700"
-                            >
-                              Kickoff
-                            </label>
-                            <input
-                              id={`kickoff-${round.id}`}
-                              type="datetime-local"
-                              required
-                              value={form.kickoff}
-                              onChange={(event) =>
-                                updateFixtureForm(
-                                  round.id,
-                                  "kickoff",
-                                  event.target.value,
-                                )
-                              }
-                              className={inputClassName}
-                            />
-                          </div>
-                        </div>
-                        <button
-                          type="submit"
-                          disabled={fixtureSubmitting === round.id}
-                          className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-                        >
-                          {fixtureSubmitting === round.id
-                            ? "Adding…"
-                            : "Add fixture"}
-                        </button>
-                      </form>
-                    ) : null}
                   </div>
                 );
               })}

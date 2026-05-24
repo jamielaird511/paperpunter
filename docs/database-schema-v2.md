@@ -8,6 +8,7 @@ The database should support:
 - global user accounts
 - multiple competitions
 - reusable competition templates
+- **shared platform fixture sets** (master fixtures model)
 - fixture tipping
 - tournament predictions later
 - scoring configuration
@@ -18,6 +19,8 @@ The database should support:
 The core rule is:
 
 > Everything revolves around `competition_id`.
+
+Fixture data is separate: rounds and fixtures belong to a **season** (platform data). Competitions **link to** a season and inherit its fixture set. See [master-fixtures-model.md](./master-fixtures-model.md).
 
 ---
 
@@ -32,6 +35,8 @@ Most major records should link back to:
 ```text
 competition_id
 ```
+
+Fixture data (`source_rounds`, `source_fixtures`) links to `season_id` instead. Competitions connect to fixture data via `competitions.season_id`.
 
 ---
 
@@ -157,6 +162,92 @@ Examples:
 - 2026 FIFA World Cup
 - 2027 Season
 
+Purpose:
+- the fixture set that competitions link to
+- admin loads rounds and fixtures once per season
+- many private competitions can share the same season
+
+---
+
+## source_rounds
+
+Stores rounds/weeks within a season. Platform admin manages these.
+
+### source_rounds
+
+```text
+id uuid primary key
+season_id uuid references seasons(id)
+name text not null
+round_number integer
+lock_time timestamptz
+status text not null
+created_at timestamptz
+updated_at timestamptz
+```
+
+### status values
+
+```text
+upcoming
+open
+locked
+completed
+cancelled
+```
+
+Purpose:
+- picking periods belong to the season, not to individual competitions
+- lock times apply across all comps using that season
+
+---
+
+## source_fixtures
+
+Stores matches/games within a source round. Platform admin manages these.
+
+### source_fixtures
+
+```text
+id uuid primary key
+season_id uuid references seasons(id)
+source_round_id uuid references source_rounds(id)
+home_team text not null
+away_team text not null
+starts_at timestamptz
+home_score integer
+away_score integer
+winner text
+status text not null
+created_at timestamptz
+updated_at timestamptz
+```
+
+### winner values
+
+```text
+home
+away
+draw
+```
+
+### status values
+
+```text
+scheduled
+locked
+completed
+cancelled
+postponed
+```
+
+Purpose:
+- shared fixture data loaded once by platform/admin
+- results entered once at source level
+- all competitions linked to the season score from the same results
+
+For MVP, teams can remain plain text. A `teams` table is optional.
+
 ---
 
 ## competition_templates
@@ -247,7 +338,10 @@ archived
 
 Purpose:
 - central record for each competition
+- links to a season for fixture data via `season_id`
 - stores settings/config for scoring and behaviour
+
+Competition owners do **not** create fixtures. They select a season when creating a comp.
 
 ---
 
@@ -333,7 +427,7 @@ Purpose:
 
 ## teams
 
-Stores teams/participants in fixtures.
+Stores teams/participants in source fixtures (optional for MVP).
 
 ### teams
 
@@ -358,59 +452,19 @@ Examples:
 
 ---
 
-## fixtures
+## source_fixture_results
 
-Stores competition fixtures.
+Stores results for source fixtures (optional separate table if results are not stored inline on `source_fixtures`).
 
-### fixtures
-
-```text
-id uuid primary key
-competition_id uuid references competitions(id)
-
-home_team_id uuid references teams(id)
-away_team_id uuid references teams(id)
-
-round_name text
-starts_at timestamptz
-venue text
-
-status text not null
-
-created_at timestamptz
-updated_at timestamptz
-```
-
-### status values
-
-```text
-scheduled
-locked
-completed
-cancelled
-postponed
-```
-
-Purpose:
-- fixtures belong to competitions
-- initially manually entered/imported
-- future versions may sync from source fixtures
-
----
-
-## fixture_results
-
-Stores results for fixtures.
-
-### fixture_results
+### source_fixture_results
 
 ```text
 id uuid primary key
-fixture_id uuid references fixtures(id)
+source_fixture_id uuid references source_fixtures(id)
 
 home_score integer
 away_score integer
-winning_team_id uuid references teams(id)
+winner text
 is_draw boolean default false
 
 result_status text not null
@@ -430,22 +484,50 @@ void
 ```
 
 Purpose:
-- separate fixtures from results
+- separate fixtures from results if needed
 - allow corrections
-- keep result handling clean
+- platform admin enters results once; all linked competitions score automatically
+
+For MVP, result fields on `source_fixtures` may be sufficient without a separate table.
+
+---
+
+## Deprecated: competition-owned fixtures
+
+> **Deprecated.** Earlier drafts placed `fixtures` and `fixture_results` directly on `competition_id`. That model is replaced by `source_fixtures` on `season_id`. Do not build new features against competition-owned fixtures.
+
+### fixtures (deprecated)
+
+```text
+id uuid primary key
+competition_id uuid references competitions(id)  -- deprecated
+home_team_id uuid references teams(id)
+away_team_id uuid references teams(id)
+round_name text
+starts_at timestamptz
+...
+```
+
+### fixture_results (deprecated)
+
+```text
+id uuid primary key
+fixture_id uuid references fixtures(id)  -- deprecated: use source_fixture_id
+...
+```
 
 ---
 
 ## picks
 
-Stores member picks for fixtures.
+Stores member picks for source fixtures within a competition.
 
 ### picks
 
 ```text
 id uuid primary key
 competition_id uuid references competitions(id)
-fixture_id uuid references fixtures(id)
+source_fixture_id uuid references source_fixtures(id)
 member_id uuid references competition_members(id)
 
 selected_team_id uuid references teams(id)
@@ -466,9 +548,10 @@ draw
 ```
 
 Purpose:
-- one member pick per fixture
+- one member pick per source fixture per competition
+- references shared platform fixture data plus competition scope
 - supports standard result tipping and margin tipping
-- should have unique constraint on fixture_id + member_id
+- should have unique constraint on `source_fixture_id` + `member_id`
 
 ---
 
@@ -482,7 +565,7 @@ Stores calculated scores for picks.
 id uuid primary key
 pick_id uuid references picks(id)
 competition_id uuid references competitions(id)
-fixture_id uuid references fixtures(id)
+source_fixture_id uuid references source_fixtures(id)
 member_id uuid references competition_members(id)
 
 points_awarded integer not null
@@ -749,8 +832,8 @@ Recommended:
 ```text
 competitions: unique(owner_user_id, slug)
 competition_members: unique(competition_id, user_id)
-picks: unique(fixture_id, member_id)
-fixture_results: unique(fixture_id)
+picks: unique(source_fixture_id, member_id)
+source_fixture_results: unique(source_fixture_id)
 invites: unique(invite_token)
 ```
 
@@ -765,17 +848,20 @@ profiles
 sports
 leagues
 seasons
+source_rounds
+source_fixtures
 competition_templates
 competitions
 competition_members
 invites
-teams
-fixtures
-fixture_results
 picks
 pick_scores
 leaderboard_snapshots
 ```
+
+Optional for MVP (can defer):
+- `teams` (plain text on source_fixtures is fine initially)
+- `source_fixture_results` (inline results on source_fixtures may suffice)
 
 Do not build Gazza or tournament prediction tables until the fixture tipping flow is working.
 
@@ -785,16 +871,18 @@ Do not build Gazza or tournament prediction tables until the fixture tipping flo
 
 The first build should prove:
 
-1. User signs up/logs in
-2. User creates a competition
-3. User adds/imports fixtures
+1. Admin loads sport/league/season with source rounds and fixtures
+2. User signs up/logs in
+3. User creates a competition linked to a season
 4. User invites members
-5. Members make picks
-6. Organiser enters results
-7. Scores calculate
+5. Members make picks against shared source fixtures
+6. Admin enters results once on source fixtures
+7. Scores calculate across linked competitions
 8. Leaderboard updates
 
 Once this works, PaperPunter V2 has a solid foundation.
+
+Organisers should never need to manually add fixtures or enter results per competition.
 
 ---
 
@@ -808,6 +896,8 @@ Do not allow these mistakes from V1 to return:
 - competition scoping bugs
 - route-specific business rules
 - Gazza controlling core state
+- organiser-managed fixture entry (fixtures are platform data)
+- competition-owned fixture tables for new features
 - excessive customisation before the core product works
 
 The database should support a simple product first, then expand carefully.
