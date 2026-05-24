@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { getSupabaseClient } from "@/lib/supabase";
+import {
+  getSupabaseClient,
+  isFixtureLocked,
+  loadMemberPicks,
+  type PickWinner,
+  saveMemberPick,
+} from "@/lib/supabase";
 
 type Competition = {
   id: string;
@@ -70,6 +76,21 @@ function formatDateTime(iso: string | null): string {
   }).format(new Date(iso));
 }
 
+function pickButtonClassName(selected: boolean, disabled: boolean): string {
+  const base =
+    "rounded-lg border px-3 py-2 text-sm font-semibold transition-colors";
+
+  if (disabled) {
+    return `${base} cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400`;
+  }
+
+  if (selected) {
+    return `${base} border-blue-600 bg-blue-600 text-white`;
+  }
+
+  return `${base} border-blue-200 bg-white text-slate-900 hover:border-blue-400`;
+}
+
 function normalizeProfile(
   profiles: ProfileDetails | ProfileDetails[] | null | undefined,
 ): ProfileDetails | null {
@@ -93,9 +114,53 @@ export default function CompetitionDetailPage() {
   const [members, setMembers] = useState<CompetitionMember[]>([]);
   const [sourceRounds, setSourceRounds] = useState<SourceRound[]>([]);
   const [sourceFixtures, setSourceFixtures] = useState<SourceFixture[]>([]);
+  const [currentMemberId, setCurrentMemberId] = useState<string | null>(null);
+  const [picksByFixture, setPicksByFixture] = useState<
+    Record<string, PickWinner>
+  >({});
+  const [savingFixtureId, setSavingFixtureId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fixtureSetError, setFixtureSetError] = useState<string | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
+
+  const loadPicks = useCallback(
+    async (memberId: string) => {
+      const supabase = getSupabaseClient();
+      const { data, error: picksError } = await loadMemberPicks(
+        supabase,
+        competitionId,
+        memberId,
+      );
+
+      if (picksError) {
+        setPickError(picksError.message);
+        return;
+      }
+
+      const pickMap = (data ?? []).reduce<Record<string, PickWinner>>(
+        (accumulator, pick) => {
+          const fixtureId = pick.source_fixture_id;
+          if (!fixtureId || accumulator[fixtureId]) {
+            return accumulator;
+          }
+
+          const winner = pick.selected_winner?.toLowerCase();
+          if (winner === "home" || winner === "away" || winner === "draw") {
+            accumulator[fixtureId] = winner;
+          }
+
+          return accumulator;
+        },
+        {},
+      );
+
+      setPicksByFixture(pickMap);
+      console.log("[loadPicks] picksByFixture map after build:", pickMap);
+      setPickError(null);
+    },
+    [competitionId],
+  );
 
   const loadFixtureSet = useCallback(async (seasonId: string) => {
     const supabase = getSupabaseClient();
@@ -168,6 +233,8 @@ export default function CompetitionDetailPage() {
         router.replace("/dashboard");
         return;
       }
+
+      setCurrentMemberId(membership.id);
 
       const { data: competitionData, error: competitionError } = await supabase
         .from("competitions")
@@ -255,6 +322,8 @@ export default function CompetitionDetailPage() {
         setSourceFixtures([]);
       }
 
+      await loadPicks(membership.id);
+
       setLoading(false);
     }
 
@@ -269,7 +338,40 @@ export default function CompetitionDetailPage() {
     });
 
     return () => subscription.unsubscribe();
-  }, [router, competitionId, loadFixtureSet]);
+  }, [router, competitionId, loadFixtureSet, loadPicks]);
+
+  async function handlePick(
+    sourceFixtureId: string,
+    selectedWinner: "home" | "away",
+    startsAt: string | null,
+  ) {
+    if (!currentMemberId || isFixtureLocked(startsAt)) {
+      return;
+    }
+
+    setSavingFixtureId(sourceFixtureId);
+    setPickError(null);
+
+    const supabase = getSupabaseClient();
+    const { error: saveError } = await saveMemberPick(supabase, {
+      competitionId,
+      sourceFixtureId,
+      competitionMemberId: currentMemberId,
+      selectedWinner,
+    });
+
+    setSavingFixtureId(null);
+
+    if (saveError) {
+      setPickError(saveError.message);
+      return;
+    }
+
+    setPicksByFixture((previous) => ({
+      ...previous,
+      [sourceFixtureId]: selectedWinner,
+    }));
+  }
 
   if (loading) {
     return (
@@ -392,11 +494,16 @@ export default function CompetitionDetailPage() {
         </section>
 
         <section className="mt-8">
-          <h2 className="text-lg font-semibold text-slate-900">Fixture set</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Picks</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Rounds and fixtures are managed by PaperPunter, not by competition
-            owners.
+            Tap a team under each fixture to save your pick before kickoff.
           </p>
+
+          {pickError ? (
+            <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              {pickError}
+            </p>
+          ) : null}
 
           {fixtureSetError ? (
             <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -440,20 +547,75 @@ export default function CompetitionDetailPage() {
                         No fixtures in this round yet.
                       </p>
                     ) : (
-                      <ul className="mt-3 space-y-2">
-                        {roundFixtures.map((fixture) => (
-                          <li
-                            key={fixture.id}
-                            className="flex items-center justify-between gap-3 rounded-lg border border-blue-50 bg-slate-50 px-3 py-2 text-sm"
-                          >
-                            <span className="font-medium text-slate-900">
-                              {fixture.home_team} vs {fixture.away_team}
-                            </span>
-                            <span className="shrink-0 text-slate-500">
-                              {formatDateTime(fixture.starts_at)}
-                            </span>
-                          </li>
-                        ))}
+                      <ul className="mt-3 space-y-3">
+                        {roundFixtures.map((fixture) => {
+                          const locked = isFixtureLocked(fixture.starts_at);
+                          const selected = picksByFixture[fixture.id];
+                          const saving = savingFixtureId === fixture.id;
+
+                          console.log("[Picks render] fixture.id:", fixture.id);
+                          console.log(
+                            "[Picks render] selected value for fixture:",
+                            selected,
+                          );
+
+                          return (
+                            <li
+                              key={fixture.id}
+                              className="rounded-lg border border-blue-50 bg-slate-50 px-3 py-3 text-sm"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="font-medium text-slate-900">
+                                  {fixture.home_team} vs {fixture.away_team}
+                                </span>
+                                <span className="shrink-0 text-slate-500">
+                                  {formatDateTime(fixture.starts_at)}
+                                </span>
+                              </div>
+                              <div className="mt-3 grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  disabled={locked || saving}
+                                  onClick={() =>
+                                    handlePick(
+                                      fixture.id,
+                                      "home",
+                                      fixture.starts_at,
+                                    )
+                                  }
+                                  className={pickButtonClassName(
+                                    selected === "home",
+                                    locked || saving,
+                                  )}
+                                >
+                                  {fixture.home_team}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={locked || saving}
+                                  onClick={() =>
+                                    handlePick(
+                                      fixture.id,
+                                      "away",
+                                      fixture.starts_at,
+                                    )
+                                  }
+                                  className={pickButtonClassName(
+                                    selected === "away",
+                                    locked || saving,
+                                  )}
+                                >
+                                  {fixture.away_team}
+                                </button>
+                              </div>
+                              {locked ? (
+                                <p className="mt-2 text-xs text-slate-500">
+                                  Locked — kickoff has passed.
+                                </p>
+                              ) : null}
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
@@ -467,13 +629,6 @@ export default function CompetitionDetailPage() {
           <h2 className="text-lg font-semibold text-slate-900">Leaderboard</h2>
           <p className="mt-4 rounded-xl border border-dashed border-blue-200 bg-white px-5 py-6 text-sm text-slate-600">
             Leaderboard coming soon. Scores land here after results are entered.
-          </p>
-        </section>
-
-        <section className="mt-8">
-          <h2 className="text-lg font-semibold text-slate-900">Picks</h2>
-          <p className="mt-4 rounded-xl border border-dashed border-blue-200 bg-white px-5 py-6 text-sm text-slate-600">
-            Picks coming soon. Tip fixtures from here once rounds are live.
           </p>
         </section>
       </main>
