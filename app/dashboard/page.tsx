@@ -6,35 +6,96 @@ import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { getSupabaseClient } from "@/lib/supabase";
 
+type UserCompetition = {
+  id: string;
+  name: string;
+  sport_code: string;
+  season: string | null;
+  status: string;
+  visibility: string;
+  invite_code: string;
+  member_limit: number;
+  role: string;
+};
+
+function formatSportCode(code: string): string {
+  return code
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [competitions, setCompetitions] = useState<UserCompetition[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
+    async function loadDashboard() {
+      setLoading(true);
+      setError(null);
+
+      const {
+        data: { user: authUser },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !authUser) {
         router.replace("/login");
         return;
       }
 
-      setUser(session.user);
+      setUser(authUser);
+
+      const { data, error: fetchError } = await supabase
+        .from("competition_members")
+        .select(
+          `
+          role,
+          competitions (
+            id,
+            name,
+            sport_code,
+            season,
+            status,
+            visibility,
+            invite_code,
+            member_limit
+          )
+        `,
+        )
+        .eq("user_id", authUser.id)
+        .eq("status", "active");
+
+      if (fetchError) {
+        setError(fetchError.message);
+        setCompetitions([]);
+      } else {
+        const items = (data ?? [])
+          .filter((row) => row.competitions !== null)
+          .map((row) => ({
+            ...(row.competitions as Omit<UserCompetition, "role">),
+            role: row.role,
+          }));
+        setCompetitions(items);
+      }
+
       setLoading(false);
-    });
+    }
+
+    loadDashboard();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!session) {
         router.replace("/login");
-        return;
       }
-
-      setUser(session.user);
-      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
@@ -84,9 +145,93 @@ export default function DashboardPage() {
           G&apos;day, {displayName}
         </h1>
         <p className="mt-2 text-slate-600">
-          Your dashboard is coming soon. Comps, picks, and ladders land here
-          next.
+          Your comps, all in one place.
         </p>
+
+        <Link
+          href="/dashboard/create-competition"
+          className="mt-6 inline-block rounded-lg bg-blue-600 px-6 py-3 text-base font-semibold text-white hover:bg-blue-700"
+        >
+          Create Competition
+        </Link>
+
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold text-slate-900">
+            Your competitions
+          </h2>
+
+          {error ? (
+            <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          ) : null}
+
+          {!error && competitions.length === 0 ? (
+            <div className="mt-4 rounded-xl border border-dashed border-blue-200 bg-white px-5 py-8 text-center">
+              <p className="font-medium text-slate-900">No competitions yet</p>
+              <p className="mt-2 text-sm text-slate-600">
+                Create your first comp and share the invite code with your
+                mates.
+              </p>
+            </div>
+          ) : null}
+
+          {!error && competitions.length > 0 ? (
+            <ul className="mt-4 space-y-4">
+              {competitions.map((competition) => (
+                <li
+                  key={competition.id}
+                  className="rounded-xl border border-blue-100 bg-white p-5"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-slate-900">
+                        {competition.name}
+                      </h3>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {formatSportCode(competition.sport_code)}
+                        {competition.season
+                          ? ` · ${competition.season}`
+                          : null}
+                      </p>
+                    </div>
+                    {competition.role === "owner" ? (
+                      <span className="shrink-0 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-800">
+                        Owner
+                      </span>
+                    ) : null}
+                  </div>
+                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <dt className="text-slate-500">Status</dt>
+                      <dd className="font-medium capitalize text-slate-900">
+                        {competition.status}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Visibility</dt>
+                      <dd className="font-medium capitalize text-slate-900">
+                        {competition.visibility}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Invite code</dt>
+                      <dd className="font-mono font-medium text-blue-700">
+                        {competition.invite_code}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Member limit</dt>
+                      <dd className="font-medium text-slate-900">
+                        {competition.member_limit}
+                      </dd>
+                    </div>
+                  </dl>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
 
         <div className="mt-8 rounded-xl border border-blue-100 bg-white p-5">
           <p className="text-sm font-medium text-slate-500">Signed in as</p>

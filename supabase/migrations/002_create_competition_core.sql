@@ -2,7 +2,173 @@
 -- Everything connects back to competition_id.
 
 -- ---------------------------------------------------------------------------
--- Helper functions for RLS
+-- Shared updated_at trigger function
+-- ---------------------------------------------------------------------------
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Tables
+-- ---------------------------------------------------------------------------
+
+create table public.competitions (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  slug text not null,
+  sport_code text not null,
+  season text,
+  created_by uuid not null references public.profiles (id) on delete restrict,
+  invite_code text unique not null,
+  visibility text not null default 'private',
+  status text not null default 'draft',
+  member_limit integer not null default 10,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint competitions_visibility_check
+    check (visibility in ('private', 'unlisted', 'public')),
+  constraint competitions_status_check
+    check (status in ('draft', 'active', 'completed', 'archived')),
+  constraint competitions_member_limit_check
+    check (member_limit > 0)
+);
+
+create index competitions_created_by_idx on public.competitions (created_by);
+
+create table public.competition_members (
+  id uuid primary key default gen_random_uuid(),
+  competition_id uuid not null references public.competitions (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  role text not null,
+  status text not null default 'active',
+  joined_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (competition_id, user_id),
+  constraint competition_members_role_check
+    check (role in ('owner', 'admin', 'member', 'viewer')),
+  constraint competition_members_status_check
+    check (status in ('invited', 'active', 'removed', 'left'))
+);
+
+create index competition_members_competition_id_idx
+  on public.competition_members (competition_id);
+
+create index competition_members_user_id_idx
+  on public.competition_members (user_id);
+
+create table public.rounds (
+  id uuid primary key default gen_random_uuid(),
+  competition_id uuid not null references public.competitions (id) on delete cascade,
+  name text not null,
+  round_number integer,
+  lock_time timestamptz,
+  status text not null default 'upcoming',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint rounds_status_check
+    check (status in ('upcoming', 'open', 'locked', 'completed', 'cancelled'))
+);
+
+create index rounds_competition_id_idx on public.rounds (competition_id);
+
+create table public.fixtures (
+  id uuid primary key default gen_random_uuid(),
+  competition_id uuid not null references public.competitions (id) on delete cascade,
+  round_id uuid not null references public.rounds (id) on delete cascade,
+  home_team text not null,
+  away_team text not null,
+  starts_at timestamptz,
+  home_score integer,
+  away_score integer,
+  winner text,
+  status text not null default 'scheduled',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fixtures_winner_check
+    check (winner is null or winner in ('home', 'away', 'draw')),
+  constraint fixtures_status_check
+    check (status in ('scheduled', 'locked', 'completed', 'cancelled', 'postponed'))
+);
+
+create index fixtures_competition_id_idx on public.fixtures (competition_id);
+create index fixtures_round_id_idx on public.fixtures (round_id);
+
+create table public.picks (
+  id uuid primary key default gen_random_uuid(),
+  competition_id uuid not null references public.competitions (id) on delete cascade,
+  fixture_id uuid not null references public.fixtures (id) on delete cascade,
+  competition_member_id uuid not null references public.competition_members (id) on delete cascade,
+  selected_winner text not null,
+  points_awarded integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (fixture_id, competition_member_id),
+  constraint picks_selected_winner_check
+    check (selected_winner in ('home', 'away', 'draw'))
+);
+
+create index picks_competition_id_idx on public.picks (competition_id);
+create index picks_fixture_id_idx on public.picks (fixture_id);
+create index picks_competition_member_id_idx on public.picks (competition_member_id);
+
+create table public.leaderboard_entries (
+  id uuid primary key default gen_random_uuid(),
+  competition_id uuid not null references public.competitions (id) on delete cascade,
+  competition_member_id uuid not null references public.competition_members (id) on delete cascade,
+  total_points integer not null default 0,
+  correct_picks integer not null default 0,
+  rank integer,
+  updated_at timestamptz not null default now(),
+  unique (competition_id, competition_member_id)
+);
+
+create index leaderboard_entries_competition_id_idx
+  on public.leaderboard_entries (competition_id);
+
+-- ---------------------------------------------------------------------------
+-- Triggers
+-- ---------------------------------------------------------------------------
+
+create trigger competitions_set_updated_at
+before update on public.competitions
+for each row
+execute function public.set_updated_at();
+
+create trigger competition_members_set_updated_at
+before update on public.competition_members
+for each row
+execute function public.set_updated_at();
+
+create trigger rounds_set_updated_at
+before update on public.rounds
+for each row
+execute function public.set_updated_at();
+
+create trigger fixtures_set_updated_at
+before update on public.fixtures
+for each row
+execute function public.set_updated_at();
+
+create trigger picks_set_updated_at
+before update on public.picks
+for each row
+execute function public.set_updated_at();
+
+create trigger leaderboard_entries_set_updated_at
+before update on public.leaderboard_entries
+for each row
+execute function public.set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- RLS helper functions
 -- ---------------------------------------------------------------------------
 
 create or replace function public.is_competition_member(p_competition_id uuid)
@@ -53,188 +219,6 @@ as $$
       and cm.status = 'active'
   );
 $$;
-
--- ---------------------------------------------------------------------------
--- Shared updated_at trigger
--- ---------------------------------------------------------------------------
-
-create or replace function public.set_updated_at()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
-
--- ---------------------------------------------------------------------------
--- competitions
--- ---------------------------------------------------------------------------
-
-create table public.competitions (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  slug text not null,
-  sport_code text not null,
-  season text,
-  created_by uuid not null references public.profiles (id) on delete restrict,
-  invite_code text unique not null,
-  visibility text not null default 'private',
-  status text not null default 'draft',
-  member_limit integer not null default 10,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint competitions_visibility_check
-    check (visibility in ('private', 'unlisted', 'public')),
-  constraint competitions_status_check
-    check (status in ('draft', 'active', 'completed', 'archived')),
-  constraint competitions_member_limit_check
-    check (member_limit > 0)
-);
-
-create index competitions_created_by_idx on public.competitions (created_by);
-
-create trigger competitions_set_updated_at
-before update on public.competitions
-for each row
-execute function public.set_updated_at();
-
--- ---------------------------------------------------------------------------
--- competition_members
--- ---------------------------------------------------------------------------
-
-create table public.competition_members (
-  id uuid primary key default gen_random_uuid(),
-  competition_id uuid not null references public.competitions (id) on delete cascade,
-  user_id uuid not null references public.profiles (id) on delete cascade,
-  role text not null,
-  status text not null default 'active',
-  joined_at timestamptz not null default now(),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (competition_id, user_id),
-  constraint competition_members_role_check
-    check (role in ('owner', 'admin', 'member', 'viewer')),
-  constraint competition_members_status_check
-    check (status in ('invited', 'active', 'removed', 'left'))
-);
-
-create index competition_members_competition_id_idx
-  on public.competition_members (competition_id);
-
-create index competition_members_user_id_idx
-  on public.competition_members (user_id);
-
-create trigger competition_members_set_updated_at
-before update on public.competition_members
-for each row
-execute function public.set_updated_at();
-
--- ---------------------------------------------------------------------------
--- rounds
--- ---------------------------------------------------------------------------
-
-create table public.rounds (
-  id uuid primary key default gen_random_uuid(),
-  competition_id uuid not null references public.competitions (id) on delete cascade,
-  name text not null,
-  round_number integer,
-  lock_time timestamptz,
-  status text not null default 'upcoming',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint rounds_status_check
-    check (status in ('upcoming', 'open', 'locked', 'completed', 'cancelled'))
-);
-
-create index rounds_competition_id_idx on public.rounds (competition_id);
-
-create trigger rounds_set_updated_at
-before update on public.rounds
-for each row
-execute function public.set_updated_at();
-
--- ---------------------------------------------------------------------------
--- fixtures
--- ---------------------------------------------------------------------------
-
-create table public.fixtures (
-  id uuid primary key default gen_random_uuid(),
-  competition_id uuid not null references public.competitions (id) on delete cascade,
-  round_id uuid not null references public.rounds (id) on delete cascade,
-  home_team text not null,
-  away_team text not null,
-  starts_at timestamptz,
-  home_score integer,
-  away_score integer,
-  winner text,
-  status text not null default 'scheduled',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint fixtures_winner_check
-    check (winner is null or winner in ('home', 'away', 'draw')),
-  constraint fixtures_status_check
-    check (status in ('scheduled', 'locked', 'completed', 'cancelled', 'postponed'))
-);
-
-create index fixtures_competition_id_idx on public.fixtures (competition_id);
-create index fixtures_round_id_idx on public.fixtures (round_id);
-
-create trigger fixtures_set_updated_at
-before update on public.fixtures
-for each row
-execute function public.set_updated_at();
-
--- ---------------------------------------------------------------------------
--- picks
--- ---------------------------------------------------------------------------
-
-create table public.picks (
-  id uuid primary key default gen_random_uuid(),
-  competition_id uuid not null references public.competitions (id) on delete cascade,
-  fixture_id uuid not null references public.fixtures (id) on delete cascade,
-  competition_member_id uuid not null references public.competition_members (id) on delete cascade,
-  selected_winner text not null,
-  points_awarded integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (fixture_id, competition_member_id),
-  constraint picks_selected_winner_check
-    check (selected_winner in ('home', 'away', 'draw'))
-);
-
-create index picks_competition_id_idx on public.picks (competition_id);
-create index picks_fixture_id_idx on public.picks (fixture_id);
-create index picks_competition_member_id_idx on public.picks (competition_member_id);
-
-create trigger picks_set_updated_at
-before update on public.picks
-for each row
-execute function public.set_updated_at();
-
--- ---------------------------------------------------------------------------
--- leaderboard_entries
--- ---------------------------------------------------------------------------
-
-create table public.leaderboard_entries (
-  id uuid primary key default gen_random_uuid(),
-  competition_id uuid not null references public.competitions (id) on delete cascade,
-  competition_member_id uuid not null references public.competition_members (id) on delete cascade,
-  total_points integer not null default 0,
-  correct_picks integer not null default 0,
-  rank integer,
-  updated_at timestamptz not null default now(),
-  unique (competition_id, competition_member_id)
-);
-
-create index leaderboard_entries_competition_id_idx
-  on public.leaderboard_entries (competition_id);
-
-create trigger leaderboard_entries_set_updated_at
-before update on public.leaderboard_entries
-for each row
-execute function public.set_updated_at();
 
 -- ---------------------------------------------------------------------------
 -- Row level security
