@@ -18,6 +18,22 @@ type UserCompetition = {
   role: string;
 };
 
+type CompetitionDetails = Omit<UserCompetition, "role">;
+
+function normalizeCompetition(
+  competitions: CompetitionDetails | CompetitionDetails[] | null | undefined,
+): CompetitionDetails | null {
+  if (!competitions) {
+    return null;
+  }
+
+  if (Array.isArray(competitions)) {
+    return competitions[0] ?? null;
+  }
+
+  return competitions;
+}
+
 function formatSportCode(code: string): string {
   return code
     .split("_")
@@ -78,11 +94,24 @@ export default function DashboardPage() {
         setCompetitions([]);
       } else {
         const items = (data ?? [])
-          .filter((row) => row.competitions !== null)
-          .map((row) => ({
-            ...(row.competitions as Omit<UserCompetition, "role">),
-            role: row.role,
-          }));
+          .map((row) => {
+            const competition = normalizeCompetition(
+              row.competitions as
+                | CompetitionDetails
+                | CompetitionDetails[]
+                | null,
+            );
+
+            if (!competition) {
+              return null;
+            }
+
+            return {
+              ...competition,
+              role: row.role,
+            };
+          })
+          .filter((item): item is UserCompetition => item !== null);
         setCompetitions(items);
       }
 
